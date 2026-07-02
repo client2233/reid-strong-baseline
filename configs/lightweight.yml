@@ -1,0 +1,62 @@
+# 轻量级配置 — 为 RTX 4060 Laptop（8GB 显存）优化
+# 使用 ResNet18 骨干网络，减小图像尺寸、批次大小和训练轮数
+
+MODEL:
+  PRETRAIN_CHOICE: 'imagenet'
+  PRETRAIN_PATH: '.torch/models/resnet18-f37072fd.pth'
+  NAME: 'resnet18'
+  LAST_STRIDE: 1
+  NECK: 'bnneck'
+  METRIC_LOSS_TYPE: 'triplet'
+  IF_LABELSMOOTH: 'on'
+  IF_WITH_CENTER: 'no'
+
+INPUT:
+  SIZE_TRAIN: [192, 96]    # 原 256x128，减小约 40%
+  SIZE_TEST: [192, 96]
+  PROB: 0.5
+  RE_PROB: 0.5
+  PADDING: 10
+
+DATASETS:
+  NAMES: ('market1501')
+
+DATALOADER:
+  SAMPLER: 'softmax_triplet'
+  NUM_INSTANCE: 2          # 原 4，减少每身份样本数
+  NUM_WORKERS: 4           # 原 8，减少数据加载线程
+  SUBSET_RATIO: 0.5        # 只用 50% 训练数据
+
+SOLVER:
+  OPTIMIZER_NAME: 'Adam'
+  MAX_EPOCHS: 30           # 原 120，大幅减少
+  BASE_LR: 0.00035
+
+  BIAS_LR_FACTOR: 1
+  WEIGHT_DECAY: 0.0005
+  WEIGHT_DECAY_BIAS: 0.0005
+  IMS_PER_BATCH: 16        # 原 64，减小批次大小
+
+  STEPS: [10, 20]          # 适配更少的 epoch
+  GAMMA: 0.1
+
+  MARGIN: 0.3
+  CLUSTER_MARGIN: 0.3
+  CENTER_LR: 0.5
+  CENTER_LOSS_WEIGHT: 0.0005
+
+  WARMUP_FACTOR: 0.01
+  WARMUP_ITERS: 10
+  WARMUP_METHOD: 'linear'
+
+  CHECKPOINT_PERIOD: 10
+  LOG_PERIOD: 50
+  EVAL_PERIOD: 5
+
+TEST:
+  IMS_PER_BATCH: 64        # 原 128
+  RE_RANKING: 'no'
+  NECK_FEAT: 'after'
+  FEAT_NORM: 'yes'
+
+OUTPUT_DIR: "outputs_light"
