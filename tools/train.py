@@ -168,10 +168,32 @@ def train(cfg):
         )
 
 
+def _build_exp_name(cfg):
+    """
+    根据配置自动生成实验目录名称。
+    格式: {backbone}_{att_type}_{att_pos}
+    例如: resnet50_baseline, resnet50_cbam_layer3, vit_base_patch16
+    """
+    model_name = cfg.MODEL.NAME
+    att_type = cfg.MODEL.ATTENTION.TYPE if hasattr(cfg.MODEL, "ATTENTION") else "none"
+    att_pos = cfg.MODEL.ATTENTION.POSITION if hasattr(cfg.MODEL, "ATTENTION") else ""
+
+    if att_type and att_type != "none":
+        # 注意力位置简写
+        pos_map = {"after_layer3": "l3", "after_layer4": "l4", "after_all": "all"}
+        pos_str = pos_map.get(att_pos, att_pos)
+        return f"{model_name}_{att_type}_{pos_str}"
+    else:
+        return f"{model_name}_baseline"
+
+
 def main():
     parser = argparse.ArgumentParser(description="ReID Baseline Training")
     parser.add_argument(
         "--config_file", default="", help="path to config file", type=str
+    )
+    parser.add_argument(
+        "--exp_name", default=None, help="custom experiment name (optional)", type=str
     )
     parser.add_argument(
         "opts",
@@ -187,9 +209,18 @@ def main():
     if args.config_file != "":
         cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+
+    # ---- 自动生成输出目录 (freeze 之前设置) ----
+    base_dir = cfg.OUTPUT_DIR
+    if args.exp_name:
+        exp_subdir = args.exp_name
+    else:
+        exp_subdir = _build_exp_name(cfg)
+    output_dir = os.path.join(base_dir, exp_subdir)
+    cfg.OUTPUT_DIR = output_dir
+
     cfg.freeze()
 
-    output_dir = cfg.OUTPUT_DIR
     if output_dir and not os.path.exists(output_dir):
         os.makedirs(output_dir)
 
@@ -205,7 +236,7 @@ def main():
     logger.info("Running with config:\n{}".format(cfg))
 
     if cfg.MODEL.DEVICE == "cuda":
-        os.environ["CUDA_VISIBLE_DEVICES"] = cfg.MODEL.DEVICE_ID  # new add by gu
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(cfg.MODEL.DEVICE_ID)  # new add by gu
     cudnn.benchmark = True
 
     # 将项目总结文档复制到输出目录

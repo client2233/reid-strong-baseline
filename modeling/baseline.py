@@ -13,6 +13,7 @@ from torch import nn
 from .backbones.resnet import ResNet, BasicBlock, Bottleneck
 from .backbones.senet import SENet, SEResNetBottleneck, SEBottleneck, SEResNeXtBottleneck
 from .backbones.resnet_ibn_a import resnet50_ibn_a
+from .backbones.vit import build_vit_backbone, ViTBackbone
 
 
 # 不同骨干网络对应的 torchvision 预训练权重下载 URL
@@ -25,26 +26,33 @@ PRETRAINED_URLS = {
 
 def _ensure_pretrained_weight(model_name, model_path):
     """
-    确保预训练权重文件存在。如果 model_path 指向目录或文件不存在，
-    自动从 torchvision 下载对应骨干网络的 ImageNet 预训练权重。
+    确保预训练权重文件存在。
+    
+    对已知的骨干网络，忽略传入的 model_path，按统一命名规则管理权重：
+      .torch/models/{model_name}-imagenet.pth
+    这样即使 lightweight.yml 指定了错误的路径，也能自动下载正确的权重。
     """
     if model_name not in PRETRAINED_URLS:
         return model_path
 
-    # 如果路径是目录或者文件不存在，自动下载
-    if os.path.isdir(model_path) or not os.path.exists(model_path):
-        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+    # 使用标准路径，不受配置文件干扰
+    # 权重统一保存到 .torch/models/{model_name}-imagenet.pth
+    if model_path:
+        cache_dir = os.path.dirname(os.path.abspath(model_path))
+    else:
+        cache_dir = os.path.abspath(".torch/models")
+    std_path = os.path.join(cache_dir, "{}-imagenet.pth".format(model_name))
+    
+    if not os.path.exists(std_path):
+        os.makedirs(cache_dir, exist_ok=True)
         print("  Auto-downloading {} pretrained weights from torchvision...".format(model_name))
         weights_enum = PRETRAINED_URLS[model_name]
-        # 下载权重
-        full_model = torchvision.models.__dict__[model_name](weights=weights_enum)
-        # 只取 backbone 的 state_dict
-        torch.save(full_model.state_dict(), model_path)
-        print("  Saved pretrained weights to {}".format(model_path))
-        # 清理内存
+        full_model = getattr(torchvision.models, model_name)(weights=weights_enum)
+        torch.save(full_model.state_dict(), std_path)
+        print("  Saved pretrained weights to {}".format(std_path))
         del full_model
 
-    return model_path
+    return std_path
 
 
 def weights_init_kaiming(m):
@@ -73,30 +81,37 @@ def weights_init_classifier(m):
 class Baseline(nn.Module):
     in_planes = 2048
 
-    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice):
+    def __init__(self, num_classes, last_stride, model_path, neck, neck_feat, model_name, pretrain_choice,
+                 att_type=None, att_pos=None,
+                 img_size_h=384, img_size_w=128):
         super(Baseline, self).__init__()
         if model_name == 'resnet18':
             self.in_planes = 512
             self.base = ResNet(last_stride=last_stride, 
                                block=BasicBlock, 
-                               layers=[2, 2, 2, 2])
+                               layers=[2, 2, 2, 2],
+                               att_type=att_type, att_pos=att_pos)
         elif model_name == 'resnet34':
             self.in_planes = 512
             self.base = ResNet(last_stride=last_stride,
                                block=BasicBlock,
-                               layers=[3, 4, 6, 3])
+                               layers=[3, 4, 6, 3],
+                               att_type=att_type, att_pos=att_pos)
         elif model_name == 'resnet50':
             self.base = ResNet(last_stride=last_stride,
                                block=Bottleneck,
-                               layers=[3, 4, 6, 3])
+                               layers=[3, 4, 6, 3],
+                               att_type=att_type, att_pos=att_pos)
         elif model_name == 'resnet101':
             self.base = ResNet(last_stride=last_stride,
                                block=Bottleneck, 
-                               layers=[3, 4, 23, 3])
+                               layers=[3, 4, 23, 3],
+                               att_type=att_type, att_pos=att_pos)
         elif model_name == 'resnet152':
             self.base = ResNet(last_stride=last_stride, 
                                block=Bottleneck,
-                               layers=[3, 8, 36, 3])
+                               layers=[3, 8, 36, 3],
+                               att_type=att_type, att_pos=att_pos)
             
         elif model_name == 'se_resnet50':
             self.base = SENet(block=SEResNetBottleneck, 
@@ -163,11 +178,28 @@ class Baseline(nn.Module):
         elif model_name == 'resnet50_ibn_a':
             self.base = resnet50_ibn_a(last_stride)
 
+        elif model_name in ['vit_tiny_patch16', 'vit_small_patch16', 'vit_base_patch16',
+                            'vit_base_patch32', 'vit_large_patch16', 'vit_large_patch32']:
+            self.base = build_vit_backbone(
+                model_name=model_name,
+                img_size_h=img_size_h,
+                img_size_w=img_size_w,
+                pretrain_choice=pretrain_choice,
+            )
+            # ViT 的 in_planes 由 embed_dim 决定
+            # 如果是 vit_base_patch16: 768, vit_large_patch16: 1024
+            # 从 base 中获取 embed_dim
+            if hasattr(self.base, 'embed_dim'):
+                self.in_planes = self.base.embed_dim
+
         if pretrain_choice == 'imagenet':
-            # 确保预训练权重存在（自动下载）
-            model_path = _ensure_pretrained_weight(model_name, model_path)
-            self.base.load_param(model_path)
-            print('Loading pretrained ImageNet model from {}'.format(model_path))
+            # ViT 在 build_vit_backbone 内部已加载预训练权重，跳过避免覆盖
+            if model_name not in ['vit_tiny_patch16', 'vit_small_patch16', 'vit_base_patch16',
+                                  'vit_base_patch32', 'vit_large_patch16', 'vit_large_patch32']:
+                # 确保预训练权重存在（自动下载）
+                model_path = _ensure_pretrained_weight(model_name, model_path)
+                self.base.load_param(model_path)
+                print('Loading pretrained ImageNet model from {}'.format(model_path))
 
         self.gap = nn.AdaptiveAvgPool2d(1)
         # self.gap = nn.AdaptiveMaxPool2d(1)

@@ -4,8 +4,10 @@
 @contact: sherlockliao01@gmail.com
 """
 
+import json
 import logging
 import os
+from collections import OrderedDict
 
 import torch
 import torch.nn as nn
@@ -17,6 +19,203 @@ from utils.reid_metric import R1_mAP
 
 global ITER
 ITER = 0
+
+
+def _get_lr(optimizer):
+    """获取当前学习率"""
+    for param_group in optimizer.param_groups:
+        return param_group['lr']
+
+
+def _save_experiment_data(output_dir, epoch_data, train_data, eval_data):
+    """
+    保存实验报告所需的完整数据：CSV + JSON + 图表
+    
+    Args:
+        output_dir: 输出目录
+        epoch_data: 每个 epoch 的训练指标列表
+        train_data: 训练过程中的迭代级指标（可选）
+        eval_data: 验证评估指标列表
+    """
+    logger = logging.getLogger("reid_baseline.train")
+    
+    # ======================== 1. 保存完整 CSV ========================
+    csv_path = os.path.join(output_dir, 'training_log.csv')
+    
+    # 收集所有 epoch_keys
+    epoch_keys = set()
+    for d in epoch_data:
+        epoch_keys.update(d.keys())
+    epoch_keys = sorted(epoch_keys)
+    
+    with open(csv_path, 'w') as f:
+        f.write(','.join(epoch_keys) + '\n')
+        for d in epoch_data:
+            f.write(','.join(str(d.get(k, '')) for k in epoch_keys) + '\n')
+    logger.info("Training log (CSV) saved to {}".format(csv_path))
+    
+    # ======================== 2. 保存 JSON 摘要 ========================
+    summary = {
+        'config': {
+            'model_name': epoch_data[0].get('model_name', 'N/A') if epoch_data else 'N/A',
+            'num_epochs': len(epoch_data),
+            'eval_interval': epoch_data[0].get('eval_period', 1) if epoch_data else 1,
+        },
+        'final_metrics': {},
+        'best_metrics': {},
+        'training_summary': {},
+    }
+    
+    if eval_data:
+        # 最终指标
+        last = eval_data[-1]
+        summary['final_metrics'] = {
+            'mAP': float(last.get('mAP', 0)),
+            'rank1': float(last.get('rank1', 0)),
+            'rank5': float(last.get('rank5', 0)),
+            'rank10': float(last.get('rank10', 0)),
+        }
+        
+        # 最佳指标
+        best_mAP = max(eval_data, key=lambda x: x.get('mAP', 0))
+        best_rank1 = max(eval_data, key=lambda x: x.get('rank1', 0))
+        summary['best_metrics'] = {
+            'best_mAP': float(best_mAP.get('mAP', 0)),
+            'best_mAP_epoch': int(best_mAP.get('epoch', 0)),
+            'best_rank1': float(best_rank1.get('rank1', 0)),
+            'best_rank1_epoch': int(best_rank1.get('epoch', 0)),
+        }
+    
+    if epoch_data:
+        train_losses = [d.get('train_loss', None) for d in epoch_data if d.get('train_loss') is not None]
+        train_accs = [d.get('train_acc', None) for d in epoch_data if d.get('train_acc') is not None]
+        summary['training_summary'] = {
+            'initial_loss': float(train_losses[0]) if train_losses else None,
+            'final_loss': float(train_losses[-1]) if train_losses else None,
+            'min_loss': float(min(train_losses)) if train_losses else None,
+            'initial_acc': float(train_accs[0]) if train_accs else None,
+            'final_acc': float(train_accs[-1]) if train_accs else None,
+            'max_acc': float(max(train_accs)) if train_accs else None,
+        }
+    
+    json_path = os.path.join(output_dir, 'experiment_summary.json')
+    with open(json_path, 'w') as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    logger.info("Experiment summary (JSON) saved to {}".format(json_path))
+    
+    # ======================== 3. 绘制综合图表 ========================
+    try:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        
+        # 确定需要绘制的子图数量
+        has_train = any(d.get('train_loss') is not None for d in epoch_data)
+        has_eval = len(eval_data) > 0
+        
+        n_plots = 1  # 至少绘制 loss
+        if has_train:
+            n_plots += 1  # train acc
+        if has_eval:
+            n_plots += 2  # mAP + Rank-1
+        
+        fig, axes = plt.subplots(1, n_plots, figsize=(5 * n_plots, 4.5))
+        if n_plots == 1:
+            axes = [axes]
+        
+        plot_idx = 0
+        
+        epochs_all = [d['epoch'] for d in epoch_data]
+        
+        # ---- 图1: Training Loss ----
+        ax = axes[plot_idx]
+        if has_train:
+            train_losses = [d.get('train_loss') for d in epoch_data]
+            ax.plot(epochs_all, train_losses, 'b-', linewidth=1.5, label='Training Loss')
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss')
+        ax.set_title('Training Loss Curve')
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        plot_idx += 1
+        
+        # ---- 图2: Training Accuracy ----
+        if has_train:
+            ax = axes[plot_idx]
+            train_accs = [d.get('train_acc') for d in epoch_data]
+            ax.plot(epochs_all, [acc * 100 for acc in train_accs], 
+                    'g-', linewidth=1.5, label='Train Acc')
+            ax.set_xlabel('Epoch')
+            ax.set_ylabel('Accuracy (%)')
+            ax.set_title('Training Accuracy Curve')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            plot_idx += 1
+        
+        # ---- 图3: mAP Curve ----
+        if has_eval:
+            ax = axes[plot_idx]
+            eval_epochs = [r['epoch'] for r in eval_data]
+            mAPs = [r['mAP'] * 100 for r in eval_data]
+            ax.plot(eval_epochs, mAPs, 'b-o', linewidth=1.5, label='mAP', markersize=4)
+            ax.set_xlabel('Epoch')
+            ax.set_ylabel('mAP (%)')
+            ax.set_title('mAP Curve')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            
+            # 标注最佳值
+            best_idx = mAPs.index(max(mAPs))
+            ax.annotate(f'Best: {max(mAPs):.1f}% @ E{eval_epochs[best_idx]}',
+                        xy=(eval_epochs[best_idx], mAPs[best_idx]),
+                        xytext=(10, 10), textcoords='offset points',
+                        fontsize=9, arrowprops=dict(arrowstyle='->', color='darkred'))
+            plot_idx += 1
+        
+        # ---- 图4: Rank-1 Curve ----
+        if has_eval:
+            ax = axes[plot_idx]
+            rank1s = [r['rank1'] * 100 for r in eval_data]
+            ax.plot(eval_epochs, rank1s, 'r-s', linewidth=1.5, label='Rank-1', markersize=4)
+            ax.set_xlabel('Epoch')
+            ax.set_ylabel('Rank-1 Accuracy (%)')
+            ax.set_title('Rank-1 Curve')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            
+            # 标注最佳值
+            best_idx = rank1s.index(max(rank1s))
+            ax.annotate(f'Best: {max(rank1s):.1f}% @ E{eval_epochs[best_idx]}',
+                        xy=(eval_epochs[best_idx], rank1s[best_idx]),
+                        xytext=(10, 10), textcoords='offset points',
+                        fontsize=9, arrowprops=dict(arrowstyle='->', color='darkred'))
+            plot_idx += 1
+        
+        plt.tight_layout()
+        save_path = os.path.join(output_dir, 'training_curves.png')
+        plt.savefig(save_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        logger.info("Training curves plot saved to {}".format(save_path))
+        
+        # ---- 额外图: 学习率曲线 (单独文件) ----
+        if 'lr' in epoch_data[0]:
+            fig2, ax2 = plt.subplots(1, 1, figsize=(7, 4))
+            lrs = [d['lr'] for d in epoch_data]
+            ax2.plot(epochs_all, lrs, 'purple', linewidth=1.5)
+            ax2.set_xlabel('Epoch')
+            ax2.set_ylabel('Learning Rate')
+            ax2.set_title('Learning Rate Schedule')
+            ax2.grid(True, alpha=0.3)
+            plt.tight_layout()
+            lr_path = os.path.join(output_dir, 'lr_schedule.png')
+            plt.savefig(lr_path, dpi=150, bbox_inches='tight')
+            plt.close()
+            logger.info("LR schedule saved to {}".format(lr_path))
+            
+    except ImportError:
+        logger.warning("matplotlib not installed, skip plotting training curves")
+    except Exception as e:
+        logger.warning("Failed to plot training curves: {}".format(e))
 
 def create_supervised_trainer(model, optimizer, loss_fn,
                               device=None):
@@ -199,7 +398,22 @@ def do_train(
         logger.info('-' * 10)
         timer.reset()
 
+    # ---- 实验数据跟踪 ----
+    epoch_data = []  # 每 epoch 的训练指标
     eval_results = []
+
+    @trainer.on(Events.EPOCH_COMPLETED)
+    def collect_epoch_metrics(engine):
+        """收集每个 epoch 的训练指标"""
+        record = {
+            'epoch': engine.state.epoch,
+            'train_loss': engine.state.metrics['avg_loss'],
+            'train_acc': engine.state.metrics['avg_acc'],
+            'lr': _get_lr(optimizer),
+            'model_name': cfg.MODEL.NAME,
+            'eval_period': eval_period,
+        }
+        epoch_data.append(record)
 
     @trainer.on(Events.EPOCH_COMPLETED)
     def log_validation_results(engine):
@@ -219,53 +433,11 @@ def do_train(
             })
 
     @trainer.on(Events.COMPLETED)
-    def plot_training_curve(engine):
-        try:
-            import matplotlib
-            matplotlib.use('Agg')
-            import matplotlib.pyplot as plt
-
-            if not eval_results:
-                return
-
-            epochs = [r['epoch'] for r in eval_results]
-            mAPs = [r['mAP'] for r in eval_results]
-            rank1s = [r['rank1'] for r in eval_results]
-
-            fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-            # mAP curve
-            axes[0].plot(epochs, mAPs, 'b-o', label='mAP')
-            axes[0].set_xlabel('Epoch')
-            axes[0].set_ylabel('mAP')
-            axes[0].set_title('Epoch vs mAP')
-            axes[0].grid(True)
-            axes[0].legend()
-
-            # Rank-1 curve
-            axes[1].plot(epochs, rank1s, 'r-s', label='Rank-1')
-            axes[1].set_xlabel('Epoch')
-            axes[1].set_ylabel('Rank-1 Accuracy')
-            axes[1].set_title('Epoch vs Rank-1')
-            axes[1].grid(True)
-            axes[1].legend()
-
-            plt.tight_layout()
-            save_path = os.path.join(output_dir, 'training_curve.png')
-            plt.savefig(save_path, dpi=150)
-            plt.close()
-            logger.info("Training curve saved to {}".format(save_path))
-
-            # Also save results as CSV
-            csv_path = os.path.join(output_dir, 'eval_results.csv')
-            with open(csv_path, 'w') as f:
-                f.write('epoch,mAP,rank1,rank5,rank10\n')
-                for r in eval_results:
-                    f.write('{},{:.6f},{:.6f},{:.6f},{:.6f}\n'.format(
-                        r['epoch'], r['mAP'], r['rank1'], r['rank5'], r['rank10']))
-            logger.info("Evaluation results saved to {}".format(csv_path))
-        except ImportError:
-            logger.warning("matplotlib not installed, skip plotting training curve")
+    def save_experiment_data(engine):
+        """训练结束时保存所有实验数据"""
+        logger.info("Saving experiment data for report...")
+        _save_experiment_data(output_dir, epoch_data, None, eval_results)
+        logger.info("All experiment data saved to {}".format(output_dir))
 
     trainer.run(train_loader, max_epochs=epochs)
 
@@ -342,7 +514,22 @@ def do_train_with_center(
         logger.info('-' * 10)
         timer.reset()
 
+    # ---- 实验数据跟踪 ----
+    epoch_data = []
     eval_results = []
+
+    @trainer.on(Events.EPOCH_COMPLETED)
+    def collect_epoch_metrics(engine):
+        """收集每个 epoch 的训练指标"""
+        record = {
+            'epoch': engine.state.epoch,
+            'train_loss': engine.state.metrics['avg_loss'],
+            'train_acc': engine.state.metrics['avg_acc'],
+            'lr': _get_lr(optimizer),
+            'model_name': cfg.MODEL.NAME,
+            'eval_period': eval_period,
+        }
+        epoch_data.append(record)
 
     @trainer.on(Events.EPOCH_COMPLETED)
     def log_validation_results(engine):
@@ -362,52 +549,10 @@ def do_train_with_center(
             })
 
     @trainer.on(Events.COMPLETED)
-    def plot_training_curve(engine):
-        try:
-            import matplotlib
-            matplotlib.use('Agg')
-            import matplotlib.pyplot as plt
-
-            if not eval_results:
-                return
-
-            epochs = [r['epoch'] for r in eval_results]
-            mAPs = [r['mAP'] for r in eval_results]
-            rank1s = [r['rank1'] for r in eval_results]
-
-            fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-            # mAP curve
-            axes[0].plot(epochs, mAPs, 'b-o', label='mAP')
-            axes[0].set_xlabel('Epoch')
-            axes[0].set_ylabel('mAP')
-            axes[0].set_title('Epoch vs mAP')
-            axes[0].grid(True)
-            axes[0].legend()
-
-            # Rank-1 curve
-            axes[1].plot(epochs, rank1s, 'r-s', label='Rank-1')
-            axes[1].set_xlabel('Epoch')
-            axes[1].set_ylabel('Rank-1 Accuracy')
-            axes[1].set_title('Epoch vs Rank-1')
-            axes[1].grid(True)
-            axes[1].legend()
-
-            plt.tight_layout()
-            save_path = os.path.join(output_dir, 'training_curve.png')
-            plt.savefig(save_path, dpi=150)
-            plt.close()
-            logger.info("Training curve saved to {}".format(save_path))
-
-            # Also save results as CSV
-            csv_path = os.path.join(output_dir, 'eval_results.csv')
-            with open(csv_path, 'w') as f:
-                f.write('epoch,mAP,rank1,rank5,rank10\n')
-                for r in eval_results:
-                    f.write('{},{:.6f},{:.6f},{:.6f},{:.6f}\n'.format(
-                        r['epoch'], r['mAP'], r['rank1'], r['rank5'], r['rank10']))
-            logger.info("Evaluation results saved to {}".format(csv_path))
-        except ImportError:
-            logger.warning("matplotlib not installed, skip plotting training curve")
+    def save_experiment_data(engine):
+        """训练结束时保存所有实验数据"""
+        logger.info("Saving experiment data for report...")
+        _save_experiment_data(output_dir, epoch_data, None, eval_results)
+        logger.info("All experiment data saved to {}".format(output_dir))
 
     trainer.run(train_loader, max_epochs=epochs)

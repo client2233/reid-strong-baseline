@@ -20,8 +20,15 @@ _C.MODEL = CN()
 # Using cuda or cpu for training
 _C.MODEL.DEVICE = "cuda"
 # ID number of GPU
-_C.MODEL.DEVICE_ID = "0"
+_C.MODEL.DEVICE_ID = 0
 # Name of backbone
+# CNN backbones: resnet18, resnet34, resnet50, resnet101, resnet152
+#                se_resnet50, se_resnet101, se_resnet152
+#                se_resnext50, se_resnext101, senet154
+#                resnet50_ibn_a
+# Transformer backbones:
+#                vit_tiny_patch16, vit_small_patch16, vit_base_patch16
+#                vit_base_patch32, vit_large_patch16, vit_large_patch32
 _C.MODEL.NAME = "resnet50"
 # Last stride of backbone
 _C.MODEL.LAST_STRIDE = 1
@@ -42,6 +49,25 @@ _C.MODEL.METRIC_LOSS_TYPE = "triplet"
 
 # If train with label smooth, options: 'on', 'off'
 _C.MODEL.IF_LABELSMOOTH = "on"
+
+# -----------------------------------------------------------------------------
+# Attention Mechanism
+# -----------------------------------------------------------------------------
+_C.MODEL.ATTENTION = CN()
+# Type of attention mechanism:
+#   'none'         - 不使用注意力机制
+#   'non_local'    - Non-local Block (自注意力，捕获长距离依赖)
+#   'cbam'         - CBAM (通道+空间注意力)
+#   'coord_att'    - Coordinate Attention (坐标注意力，保留位置信息)
+#   'external_att' - External Attention (外部注意力，线性复杂度)
+#   'gather_excite'- Gather-Excite (上下文聚合注意力)
+#   'transformer'  - Transformer Encoder Block (MHSA + FFN, 标准Transformer)
+_C.MODEL.ATTENTION.TYPE = "none"
+# Position to insert attention mechanism:
+#   'after_layer3' - 在 layer3 之后插入（推荐，计算量适中）
+#   'after_layer4' - 在 layer4 之后插入（最小计算量）
+#   'after_all'    - 在每个阶段后都插入（最大计算量，最高性能）
+_C.MODEL.ATTENTION.POSITION = "after_layer3"
 
 
 # -----------------------------------------------------------------------------

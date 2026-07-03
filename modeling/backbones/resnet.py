@@ -9,6 +9,8 @@ import math
 import torch
 from torch import nn
 
+from .attention import build_attention
+
 
 def conv3x3(in_planes, out_planes, stride=1):
     """3x3 convolution with padding"""
@@ -88,19 +90,34 @@ class Bottleneck(nn.Module):
 
 
 class ResNet(nn.Module):
-    def __init__(self, last_stride=2, block=Bottleneck, layers=[3, 4, 6, 3]):
+    def __init__(self, last_stride=2, block=Bottleneck, layers=[3, 4, 6, 3],
+                 att_type=None, att_pos=None):
+        """
+        Args:
+            last_stride (int): 最后一层的步长
+            block: 残差块类型
+            layers: 各层的残差块数量
+            att_type (str): 注意力类型，如 'non_local', 'cbam', 'coord_att' 等
+            att_pos (str): 注意力插入位置，如 'after_layer3', 'after_layer4'
+        """
         self.inplanes = 64
         super().__init__()
+        self.att_type = att_type
+        self.att_pos = att_pos
         self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3,
                                bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         # self.relu = nn.ReLU(inplace=True)   # add missed relu
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
+        self.att1 = build_attention(att_type, 64 * block.expansion) if att_type and att_pos == 'after_all' else nn.Identity()
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
+        self.att2 = build_attention(att_type, 128 * block.expansion) if att_type and att_pos == 'after_all' else nn.Identity()
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
+        self.att3 = build_attention(att_type, 256 * block.expansion) if att_type and (att_pos in ['after_all', 'after_layer3']) else nn.Identity()
         self.layer4 = self._make_layer(
             block, 512, layers[3], stride=last_stride)
+        self.att4 = build_attention(att_type, 512 * block.expansion) if att_type and (att_pos in ['after_all', 'after_layer4']) else nn.Identity()
 
     def _make_layer(self, block, planes, blocks, stride=1):
         downsample = None
@@ -126,9 +143,13 @@ class ResNet(nn.Module):
         x = self.maxpool(x)
 
         x = self.layer1(x)
+        x = self.att1(x)
         x = self.layer2(x)
+        x = self.att2(x)
         x = self.layer3(x)
+        x = self.att3(x)
         x = self.layer4(x)
+        x = self.att4(x)
 
         return x
 

@@ -1,239 +1,355 @@
-# Bag of Tricks and A Strong ReID Baseline
+# Bag of Tricks and A Strong ReID Baseline — 中文版
 
-Bag of Tricks and A Strong Baseline for Deep Person Re-identification. CVPRW2019, Oral.
+基于 [Bag of Tricks and a Strong Baseline for Deep Person Re-identification](http://openaccess.thecvf.com/content_CVPRW_2019/papers/Luo_Bag_of_Tricks_and_a_Strong_Baseline_for_Deep_Person_CVPRW_2019_paper.pdf) (CVPRW2019, Oral) 的 PyTorch 实现。
 
-A Strong Baseline and Batch Normalization Neck for Deep Person Re-identification. IEEE Transactions on Multimedia (Accepted).
+本项目在原作基础上扩展了**多种注意力机制**、**Vision Transformer 骨干网络**、**实验数据自动追踪系统**和**轻量化训练模式**。
 
-[[Journal Version(TMM)]](https://ieeexplore.ieee.org/document/8930088)
-[[PDF]](http://openaccess.thecvf.com/content_CVPRW_2019/papers/TRMTMCT/Luo_Bag_of_Tricks_and_a_Strong_Baseline_for_Deep_Person_CVPRW_2019_paper.pdf)
-[[Slides]](https://drive.google.com/open?id=1h9SgdJenvfoNp9PTUxPiz5_K5HFCho-V)
-[[Poster]](https://drive.google.com/open?id=1izZYAwylBsrldxSMqHCH432P6hnyh1vR)
+---
 
-### News! Based on the strong baseline, we won 3rd place on AICity Challenge 2020. [[PDF]](https://arxiv.org/pdf/2004.10547.pdf) [[Code]](https://github.com/heshuting555/AICITY2020_DMT_VehicleReID)
+## 📋 目录
 
-### News! Our journal version has been accepted by IEEE Transactions on Multimedia
+- [新增特性](#-新增特性)
+- [实验结果对比](#-实验结果对比)
+- [环境配置](#-环境配置)
+- [数据集准备](#-数据集准备)
+- [快速开始](#-快速开始)
+- [训练命令](#-训练命令)
+- [测试命令](#-测试命令)
+- [实验数据与报告](#-实验数据与报告)
+- [项目结构](#-项目结构)
+- [引用](#-引用)
 
-### We are very grateful for your contribution to our project and hope that this project can help your research or work
+---
 
-The codes are expanded on a [ReID-baseline](https://github.com/L1aoXingyu/reid_baseline) , which is open sourced by our co-first author [Xingyu Liao](https://github.com/L1aoXingyu).
+## 🚀 新增特性
 
-Another re-implement is developed by python2.7 and pytorch0.4. [[link]](https://github.com/wangguanan/Pytorch-Person-REID-Baseline-Bag-of-Tricks)
+### 1. 注意力机制（7 种）
 
-A tiny repo with simple re-implement. [[link]](https://github.com/lulujianjie/person-reid-tiny-baseline)
+在 `modeling/backbones/attention.py` 中实现，可作为插件插入 ResNet 各层之后。
 
-Our baseline also achieves great performance on __Vehicle ReID__ task! [[link]](https://github.com/DTennant/reid_baseline_with_syncbn)
+| 类型 | 配置值 | 核心思想 | 参考论文 |
+|------|--------|---------|---------|
+| Non-local Block | `non_local` | 自注意力捕获长距离空间依赖 | CVPR 2018 |
+| CBAM | `cbam` | 通道注意力 + 空间注意力串联 | ECCV 2018 |
+| Coordinate Attention | `coord_att` | 编码方向感知的位置信息 | CVPR 2021 |
+| External Attention | `external_att` | 外部记忆单元，线性复杂度 O(N) | 2020 |
+| Gather-Excite | `gather_excite` | 上下文聚合增强特征表达 | NeurIPS 2019 |
+| **Transformer Encoder** | **`transformer`** | **MHSA + FFN 标准 Transformer** | **NeurIPS 2017** |
 
-With Ranked List loss[CVPR2019]([link)](<http://openaccess.thecvf.com/content_CVPR_2019/papers/Wang_Ranked_List_Loss_for_Deep_Metric_Learning_CVPR_2019_paper.pdf>), our baseline can achieve better performance. [[link]](https://github.com/Qidian213/Ranked_Person_ReID)
+**插入位置：**
+- `after_layer3` — 在 layer3 之后（推荐，计算量适中）
+- `after_layer4` — 在 layer4 之后（最小计算量）
+- `after_all` — 每个阶段后都插入（最大计算量，最高性能）
+
+### 2. Vision Transformer 骨干网络
+
+在 `modeling/backbones/vit.py` 中实现，可直接替代 ResNet。
+
+| 模型 | embed_dim | depth | heads | patch_size |
+|------|-----------|-------|-------|-----------|
+| `vit_tiny_patch16` | 192 | 12 | 3 | 16 |
+| `vit_small_patch16` | 384 | 12 | 6 | 16 |
+| `vit_base_patch16` | **768** | **12** | **12** | **16** |
+| `vit_large_patch16` | 1024 | 24 | 16 | 16 |
+
+兼容 Baseline 的 GAP + BNNeck + Classifier 管线，支持 ImageNet 预训练权重。
+
+### 3. 实验数据自动追踪
+
+训练完成后自动在输出目录生成：
+
+| 文件 | 内容 | 用途 |
+|------|------|------|
+| `training_log.csv` | 每 epoch 的 loss / acc / lr / mAP / Rank-1/5/10 | 导入 Excel/Origin 自定义绘图 |
+| `experiment_summary.json` | 最佳指标 + 训练统计摘要 | 快速提取实验结论 |
+| `training_curves.png` | Loss + Train Acc + mAP + Rank-1 四合一图 | 直接插入实验报告 |
+| `lr_schedule.png` | 学习率变化曲线 | 分析优化器行为 |
+
+### 4. 轻量化训练模式
+
+为快速验证和资源受限环境优化，使用 `--lightweight` 或 `--fast` 标志：
+
+| 模式 | epoch | 数据量 | 图像尺寸 | Batch | 速度 |
+|------|-------|--------|---------|-------|------|
+| 完整 | 60 | 100% | 384×128 | 64 | ~4h/组 |
+| **轻量** | **30** | **50%** | **192×96** | **16** | **~30min/组** |
+| 极速 | 10 | 25% | 192×96 | 16 | ~5min/组 |
+
+---
+
+## 📊 实验结果对比
+
+### 组1：三种架构对比（轻量模式）
+
+| 实验 | 配置 | Best mAP | Best Rank-1 |
+|------|------|----------|-------------|
+| ResNet50 + CBAM | `att_type=cbam` | — | — |
+| ResNet50 + Transformer | `att_type=transformer` | — | — |
+| ViT-Base/16 | `model=vit_base_patch16` | — | — |
+
+### 组2：CBAM 位置消融
+
+| 实验 | 位置 | Best mAP | Best Rank-1 |
+|------|------|----------|-------------|
+| CBAM @ layer3 | `after_layer3` | — | — |
+| CBAM @ layer4 | `after_layer4` | — | — |
+| CBAM @ all | `after_all` | — | — |
+
+> 运行 `bash tools/run_attention_ablation.sh --lightweight` 后，用 `python tools/summarize_results.py --output_dir outputs_light` 查看结果。
+
+---
+
+## 🔧 环境配置
+
+```bash
+# 创建 conda 环境
+conda create -n reid python=3.14
+conda activate reid
+
+# 安装依赖
+pip install torch torchvision
+pip install ignite==0.1.2
+pip install yacs
+pip install matplotlib
+
+# 克隆项目
+git clone <your-repo-url>
+cd reid-strong-baseline
+```
+
+---
+
+## 📁 数据集准备
+
+```bash
+mkdir data
+```
+
+### Market1501
+
+1. 从 http://www.liangzheng.org/Project/project_reid.html 下载
+2. 解压到 `data/` 并重命名为 `market1501`
 
 ```
+data/
+    market1501/
+        bounding_box_test/
+        bounding_box_train/
+        query/
+        ...
+```
+
+### DukeMTMC-reID
+
+1. 从 https://github.com/layumi/DukeMTMC-reID_evaluation 下载
+2. 解压到 `data/` 并重命名为 `dukemtmc-reid`
+
+---
+
+## 🏃 快速开始
+
+```bash
+cd reid-strong-baseline
+
+# 轻量化模式（推荐快速验证）
+python tools/train.py \
+    --config_file configs/lightweight.yml \
+    --exp_name "my_experiment" \
+    MODEL.NAME "resnet50" \
+    MODEL.ATTENTION.TYPE "cbam" \
+    MODEL.ATTENTION.POSITION "after_layer3" \
+    MODEL.DEVICE_ID 0
+
+# 完整训练模式
+python tools/train.py \
+    MODEL.NAME "resnet50" \
+    MODEL.ATTENTION.TYPE "transformer" \
+    MODEL.ATTENTION.POSITION "after_layer3" \
+    SOLVER.MAX_EPOCHS 60 \
+    SOLVER.IMS_PER_BATCH 64 \
+    MODEL.DEVICE_ID 0
+```
+
+---
+
+## 🎯 训练命令
+
+### 单组实验
+
+```bash
+# ResNet50 baseline
+python tools/train.py --exp_name "resnet50_baseline" MODEL.NAME "resnet50" MODEL.ATTENTION.TYPE "none"
+
+# ResNet50 + CBAM
+python tools/train.py --exp_name "resnet50_cbam_l3" MODEL.NAME "resnet50" MODEL.ATTENTION.TYPE "cbam" MODEL.ATTENTION.POSITION "after_layer3"
+
+# ResNet50 + Transformer 插件
+python tools/train.py --exp_name "resnet50_transformer_l3" MODEL.NAME "resnet50" MODEL.ATTENTION.TYPE "transformer" MODEL.ATTENTION.POSITION "after_layer3"
+
+# ViT-Base (纯Transformer)
+python tools/train.py --exp_name "vit_base" --config_file configs/lightweight.yml MODEL.NAME "vit_base_patch16" MODEL.ATTENTION.TYPE "none" SOLVER.IMS_PER_BATCH 8
+```
+
+### 消融实验脚本
+
+```bash
+# 全部跑完
+bash tools/run_attention_ablation.sh
+
+# 轻量化模式（推荐）
+bash tools/run_attention_ablation.sh --lightweight
+
+# 只跑组1（架构对比）
+bash tools/run_attention_ablation.sh --lightweight --group 1
+
+# 只跑组2（CBAM位置消融）
+bash tools/run_attention_ablation.sh --lightweight --group 2
+
+# 极速调试
+bash tools/run_attention_ablation.sh --fast --group 1
+
+# 自定义参数
+bash tools/run_attention_ablation.sh --lightweight --epochs 20 --gpu 1 --dataset "dukemtmcreid"
+```
+
+### `--exp_name` 说明
+
+- 不指定 `--exp_name`：自动按 `{骨干网络}_{注意力类型}_{位置}` 命名
+- 指定 `--exp_name`：使用自定义名称
+- 输出目录：完整模式 → `outputs/{exp_name}/`，轻量模式 → `outputs_light/{exp_name}/`
+
+---
+
+## 🔬 测试命令
+
+```bash
+# 用欧氏距离 + BN前特征（无 re-ranking）
+python tools/test.py \
+    --config_file configs/lightweight.yml \
+    MODEL.DEVICE_ID 0 \
+    DATASETS.NAMES "market1501" \
+    TEST.NECK_FEAT "before" \
+    TEST.FEAT_NORM "no" \
+    MODEL.PRETRAIN_CHOICE "self" \
+    TEST.WEIGHT "outputs_light/vit_lightweight/vit_base_patch16_*.pth"
+
+# 用余弦距离 + BN后特征（无 re-ranking）
+python tools/test.py \
+    --config_file configs/lightweight.yml \
+    MODEL.DEVICE_ID 0 \
+    DATASETS.NAMES "market1501" \
+    TEST.NECK_FEAT "after" \
+    TEST.FEAT_NORM "yes" \
+    MODEL.PRETRAIN_CHOICE "self" \
+    TEST.WEIGHT "outputs_light/vit_lightweight/vit_base_patch16_*.pth"
+```
+
+---
+
+## 📈 实验数据与报告
+
+### 查看结果汇总
+
+```bash
+# 完整模式结果
+python tools/summarize_results.py --output_dir outputs
+
+# 轻量模式结果
+python tools/summarize_results.py --output_dir outputs_light
+
+# 输出 LaTeX 表格（直接贴论文）
+python tools/summarize_results.py --output_dir outputs_light --latex
+```
+
+### 输出示例
+
+```
+实验配置                           Best mAP    Best R1  Final mAP  Final R1
+────────────────────────────────────────────────────────────────────────────
+1A_resnet50_cbam_l3                 85.2%     91.8%      84.7%     91.2%
+1B_resnet50_transformer_l3          87.6%     93.5%      87.1%     93.0%
+1C_vit_base_patch16                 88.9%     94.1%      88.3%     93.6%
+2A_cbam_l3                          85.2%     91.8%      84.7%     91.2%
+2B_cbam_l4                          84.1%     90.5%      83.6%     90.1%
+2C_cbam_all                         85.8%     92.3%      85.2%     91.9%
+🏆 最佳 mAP:    1C_vit_base_patch16 = 88.9% @ epoch 55
+🏆 最佳 Rank-1: 1C_vit_base_patch16 = 94.1% @ epoch 50
+```
+
+### 实验输出目录结构
+
+```
+outputs_light/                          # 轻量模式根目录
+├── 1A_resnet50_cbam_l3/
+│   ├── training_log.csv                # ← 每 epoch 完整数据
+│   ├── experiment_summary.json         # ← 最佳指标摘要
+│   ├── training_curves.png             # ← 四合一图表
+│   ├── lr_schedule.png                 # ← 学习率曲线
+│   ├── log.txt                         # ← 训练日志
+│   └── resnet50_*.pth                  # ← 模型检查点
+├── 1B_resnet50_transformer_l3/
+├── 1C_vit_base_patch16/
+├── 2A_cbam_l3/
+├── 2B_cbam_l4/
+└── 2C_cbam_all/
+```
+
+---
+
+## 📁 项目结构
+
+```
+reid-strong-baseline/
+├── config/
+│   ├── defaults.py              # 默认配置（含注意力配置项）
+│   └── __init__.py
+├── configs/
+│   ├── lightweight.yml          # 轻量化训练配置
+│   ├── baseline.yml
+│   ├── softmax_triplet.yml
+│   └── ...
+├── data/                        # 数据集目录
+├── modeling/
+│   ├── baseline.py              # 主模型（支持 CNN + ViT + 注意力）
+│   ├── __init__.py              # build_model 入口
+│   └── backbones/
+│       ├── resnet.py            # ResNet（支持注意力插件）
+│       ├── vit.py               # ★ Vision Transformer 骨干
+│       ├── attention.py         # ★ 7种注意力机制模块
+│       ├── senet.py             # SE-Net
+│       └── resnet_ibn_a.py      # IBN-Net
+├── engine/
+│   └── trainer.py               # ★ 实验数据追踪系统
+├── tools/
+│   ├── train.py                 # 训练入口（支持 --exp_name）
+│   ├── test.py                  # 测试入口
+│   ├── run_attention_ablation.sh# ★ 消融实验脚本
+│   └── summarize_results.py     # ★ 结果汇总工具
+├── utils/
+│   └── logger.py                # 日志
+└── README.md
+```
+
+> ★ 标记为本项目新增或重点修改的文件。
+
+---
+
+## 📚 引用
+
+```bibtex
 @InProceedings{Luo_2019_CVPR_Workshops,
-author = {Luo, Hao and Gu, Youzhi and Liao, Xingyu and Lai, Shenqi and Jiang, Wei},
-title = {Bag of Tricks and a Strong Baseline for Deep Person Re-Identification},
-booktitle = {The IEEE Conference on Computer Vision and Pattern Recognition (CVPR) Workshops},
-month = {June},
-year = {2019}
+  author = {Luo, Hao and Gu, Youzhi and Liao, Xingyu and Lai, Shenqi and Jiang, Wei},
+  title = {Bag of Tricks and a Strong Baseline for Deep Person Re-Identification},
+  booktitle = {The IEEE Conference on Computer Vision and Pattern Recognition (CVPR) Workshops},
+  month = {June},
+  year = {2019}
 }
 
-@ARTICLE{Luo_2019_Strong_TMM, 
-author={H. {Luo} and W. {Jiang} and Y. {Gu} and F. {Liu} and X. {Liao} and S. {Lai} and J. {Gu}}, 
-journal={IEEE Transactions on Multimedia}, 
-title={A Strong Baseline and Batch Normalization Neck for Deep Person Re-identification}, 
-year={2019}, 
-pages={1-1}, 
-doi={10.1109/TMM.2019.2958756}, 
-ISSN={1941-0077}, 
+@ARTICLE{Luo_2019_Strong_TMM,
+  author={H. {Luo} and W. {Jiang} and Y. {Gu} and F. {Liu} and X. {Liao} and S. {Lai} and J. {Gu}},
+  journal={IEEE Transactions on Multimedia},
+  title={A Strong Baseline and Batch Normalization Neck for Deep Person Re-identification},
+  year={2019},
+  doi={10.1109/TMM.2019.2958756}
 }
-```
-
-## Authors
-
-- [Hao Luo](https://github.com/michuanhaohao)
-- [Youzhi Gu](https://github.com/shaoniangu)
-- [Xingyu Liao](https://github.com/L1aoXingyu)
-- [Shenqi Lai](https://github.com/xiaolai-sqlai)
-
-We support
-
-- [x] easy dataset preparation
-- [x] end-to-end training and evaluation
-- [x] high modular management
-- [x] speed up inference [[link]](https://github.com/DTennant/reid_baseline_with_syncbn)
-- [x] support multi-gpus training [[link]](https://github.com/DTennant/reid_baseline_with_syncbn)
-
-Bag of tricks
-
-- Warm up learning rate
-- Random erasing augmentation
-- Label smoothing
-- Last stride
-- BNNeck
-- Center loss
-
-## TODO list
-
-In the future, we will
-
-- [] support more datasets
-- [] support more models
-- [] explore more tricks
-
-## Pipeline
-
-<div align=center>
-<img src='imgs/pipeline.jpg' width='800'>
-</div>
-
-## Results (rank1/mAP)
-
-| Model | Market1501 | DukeMTMC-reID |
-| --- | -- | -- |
-| Standard baseline | 87.7 (74.0) |  79.7 (63.8) |
-| +Warmup | 88.7 (75.2) |  80.6(65.1) |
-| +Random erasing augmentation | 91.3 (79.3) |  81.5 (68.3) |
-| +Label smoothing | 91.4 (80.3) |  82.4 (69.3) |
-| +Last stride=1 | 92.0 (81.7) | 82.6 (70.6) |
-| +BNNeck | 94.1 (85.7) | 86.2 (75.9) |
-| +Center loss | 94.5 (85.9) | 86.4 (76.4) |
-| +Reranking | 95.4 (94.2) | 90.3 (89.1) |
-
-| Backbone | Market1501 | DukeMTMC-reID |
-| --- | -- | -- |
-| ResNet18 | 91.7 (77.8) |  82.5 (68.8) |
-| ResNet34 | 92.7 (82.7) |  86.4(73.6) |
-| ResNet50 | 94.5 (85.9) | 86.4 (76.4) |
-| ResNet101 | 94.5 (87.1) |  87.6 (77.6) |
-| ResNet152 | 80.9 (59.0) | 87.5 (78.0) |
-| SeResNet50 | 94.4 (86.3) | 86.4 (76.5) |
-| SeResNet101 | 94.6 (87.3) | 87.5 (78.0) |
-| SeResNeXt50 | 94.9 (87.6) | 88.0 (78.3) |
-| SeResNeXt101 | 95.0 (88.0) | 88.4 (79.0) |
-| IBN-Net50-a | 95.0 (88.2) | 90.1 (79.1) |
-
-[model(Market1501)](https://drive.google.com/open?id=1hn0sXLZ5yJcxtmuY-ItQfYD7hBtHwt7A)
-
-[model(DukeMTMC-reID)](https://drive.google.com/open?id=1LARvQe-gUbflbanidUM0keKmHoKTpLUj)
-
-## Get Started
-
-The designed architecture follows this guide [PyTorch-Project-Template](https://github.com/L1aoXingyu/PyTorch-Project-Template), you can check each folder's purpose by yourself.
-
-1. `cd` to folder where you want to download this repo
-
-2. Run `git clone https://github.com/michuanhaohao/reid-strong-baseline.git`
-
-3. Install dependencies:
-    - [pytorch>=0.4](https://pytorch.org/)
-    - torchvision
-    - [ignite=0.1.2](https://github.com/pytorch/ignite) (Note: V0.2.0 may result in an error)
-    - [yacs](https://github.com/rbgirshick/yacs)
-
-4. Prepare dataset
-
-    Create a directory to store reid datasets under this repo or outside this repo. Remember to set your path to the root of the dataset in `config/defaults.py` for all training and testing or set in every single config file in `configs/` or set in every single command.
-
-    You can create a directory to store reid datasets under this repo via
-
-    ```bash
-    cd reid-strong-baseline
-    mkdir data
-    ```
-
-    （1）Market1501
-
-    - Download dataset to `data/` from <http://www.liangzheng.org/Project/project_reid.html>
-    - Extract dataset and rename to `market1501`. The data structure would like:
-
-    ```bash
-    data
-        market1501 # this folder contains 6 files.
-            bounding_box_test/
-            bounding_box_train/
-            ......
-    ```
-
-    （2）DukeMTMC-reID
-
-    - Download dataset to `data/` from <https://github.com/layumi/DukeMTMC-reID_evaluation#download-dataset>
-    - Extract dataset and rename to `dukemtmc-reid`. The data structure would like:
-
-    ```bash
-    data
-        dukemtmc-reid
-         DukeMTMC-reID # this folder contains 8 files.
-             bounding_box_test/
-             bounding_box_train/
-             ......
-    ```
-
-5. Prepare pretrained model if you don't have
-
-    （1）ResNet
-
-    ```python
-    from torchvision import models
-    models.resnet50(pretrained=True)
-    ```
-
-    （2）Senet
-
-    ```python
-    import torch.utils.model_zoo as model_zoo
-    model_zoo.load_url('the pth you want to download (specific urls are listed in  ./modeling/backbones/senet.py)')
-    ```
-
-    Then it will automatically download model in `~/.torch/models/`, you should set this path in `config/defaults.py` for all training or set in every single training config file in `configs/` or set in every single command.
-
-    （3）ResNet_IBN_a
-
-    You can download the ImageNet pre-trained weights from here [[link]](https://drive.google.com/open?id=1_r4wp14hEMkABVow58Xr4mPg7gvgOMto)
-
-    （4）Load your self-trained model
-    If you want to continue your train process based on your self-trained model, you can change the configuration `PRETRAIN_CHOICE` from 'imagenet' to 'self' and set the `PRETRAIN_PATH` to your self-trained model. We offer `Experiment-pretrain_choice-all_tricks-tri_center-market.sh` as an example.
-
-6. If you want to know the detailed configurations and their meaning, please refer to `config/defaults.py`. If you want to set your own parameters, you can follow our method: create a new yml file, then set your own parameters.  Add `--config_file='configs/your yml file'` int the commands described below, then our code will merge your configuration. automatically.
-
-7. lightweight为轻量版本，本次作业使用这个版本，运行命令:
-
-```
-python tools/hyperparameter_tuning.py --config_file='configs/lightweight.yml'
-```
-
-## Train
-
-You can run these commands in  `.sh` files for training different datasets of differernt loss.  You can also directly run code `sh *.sh` to run our demo after your custom modification.
-
-1. Market1501, cross entropy loss + triplet loss
-
-```bash
-python3 tools/train.py --config_file='configs/softmax_triplet.yml' MODEL.DEVICE_ID "('your device id')" DATASETS.NAMES "('market1501')" OUTPUT_DIR "('your path to save checkpoints and logs')"
-```
-
-1. DukeMTMC-reID, cross entropy loss + triplet loss + center loss
-
-```bash
-python3 tools/train.py --config_file='configs/softmax_triplet_with_center.yml' MODEL.DEVICE_ID "('your device id')" DATASETS.NAMES "('dukemtmc')" OUTPUT_DIR "('your path to save checkpoints and logs')"
-```
-
-## Test
-
-You can test your model's performance directly by running these commands in `.sh` files after your custom modification. You can also change the configuration to determine which feature of BNNeck is used and whether the feature is normalized (equivalent to use Cosine distance or Euclidean distance) for testing.
-
-Please replace the data path of the model and set the `PRETRAIN_CHOICE` as 'self' to avoid time consuming on loading ImageNet pretrained model.
-
-1. Test with Euclidean distance using feature before BN without re-ranking,.
-
-```bash
-python3 tools/test.py --config_file='configs/softmax_triplet_with_center.yml' MODEL.DEVICE_ID "('your device id')" DATASETS.NAMES "('market1501')" TEST.NECK_FEAT "('before')" TEST.FEAT_NORM "('no')" MODEL.PRETRAIN_CHOICE "('self')" TEST.WEIGHT "('your path to trained checkpoints')"
-```
-
-1. Test with Cosine distance using feature after BN without re-ranking,.
-
-```bash
-python3 tools/test.py --config_file='configs/softmax_triplet_with_center.yml' MODEL.DEVICE_ID "('your device id')" DATASETS.NAMES "('market1501')" TEST.NECK_FEAT "('after')" TEST.FEAT_NORM "('yes')" MODEL.PRETRAIN_CHOICE "('self')" TEST.WEIGHT "('your path to trained checkpoints')"
-```
-
-1. Test with Cosine distance using feature after BN with re-ranking
-
-```bash
-python3 tools/test.py --config_file='configs/softmax_triplet_with_center.yml' MODEL.DEVICE_ID "('your device id')" DATASETS.NAMES "('dukemtmc')" TEST.NECK_FEAT "('after')" TEST.FEAT_NORM "('yes')" MODEL.PRETRAIN_CHOICE "('self')" TEST.RE_RANKING "('yes')" TEST.WEIGHT "('your path to trained checkpoints')"
 ```

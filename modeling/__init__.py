@@ -10,5 +10,17 @@ from .baseline import Baseline
 def build_model(cfg, num_classes):
     # if cfg.MODEL.NAME == 'resnet50':
     #     model = Baseline(num_classes, cfg.MODEL.LAST_STRIDE, cfg.MODEL.PRETRAIN_PATH, cfg.MODEL.NECK, cfg.TEST.NECK_FEAT)
-    model = Baseline(num_classes, cfg.MODEL.LAST_STRIDE, cfg.MODEL.PRETRAIN_PATH, cfg.MODEL.NECK, cfg.TEST.NECK_FEAT, cfg.MODEL.NAME, cfg.MODEL.PRETRAIN_CHOICE)
+    model = Baseline(
+        num_classes, 
+        cfg.MODEL.LAST_STRIDE, 
+        cfg.MODEL.PRETRAIN_PATH, 
+        cfg.MODEL.NECK, 
+        cfg.TEST.NECK_FEAT, 
+        cfg.MODEL.NAME, 
+        cfg.MODEL.PRETRAIN_CHOICE,
+        att_type=cfg.MODEL.ATTENTION.TYPE,
+        att_pos=cfg.MODEL.ATTENTION.POSITION,
+        img_size_h=cfg.INPUT.SIZE_TRAIN[0],
+        img_size_w=cfg.INPUT.SIZE_TRAIN[1],
+    )
     return model
